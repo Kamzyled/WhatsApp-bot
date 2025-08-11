@@ -1,48 +1,61 @@
-require('dotenv').config();
-const { makeWASocket, useMultiFileAuthState } = require('@adiwajshing/baileys');
-const qrcode = require('qrcode-terminal');
-const OpenAI = require('openai');
+import makeWASocket, { useMultiFileAuthState, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
+import qrcode from 'qrcode-terminal'
+import dotenv from 'dotenv'
+import OpenAI from 'openai'
+
+dotenv.config()
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
-});
+})
 
-async function connectBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-  const sock = makeWASocket({ auth: state, printQRInTerminal: true });
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+  const { version } = await fetchLatestBaileysVersion()
 
-  sock.ev.on('connection.update', ({ connection, qr }) => {
-    if (qr) qrcode.generate(qr, { small: true });
-    if (connection === 'open') console.log('✅ Bot connected to WhatsApp');
-  });
+  const sock = makeWASocket({
+    auth: state,
+    version
+  })
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('connection.update', (update) => {
+    const { connection, qr } = update
+    if (qr) {
+      console.log('Scan this QR to login:')
+      qrcode.generate(qr, { small: true })
+    }
+    if (connection === 'open') {
+      console.log('✅ WhatsApp bot connected!')
+    }
+  })
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return;
+  sock.ev.on('messages.upsert', async (msgUpdate) => {
+    const message = msgUpdate.messages[0]
+    if (!message.message || message.key.fromMe) return
 
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
-    if (!text) return;
+    const from = message.key.remoteJid
+    const text = message.message.conversation || message.message.extendedTextMessage?.text || ''
 
-    console.log('📩 Message:', text);
+    console.log(`💬 New message from ${from}: ${text}`)
 
     try {
-      const response = await openai.chat.completions.create({
+      const reply = await openai.chat.completions.create({
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: process.env.BOT_PERSONA },
+          { role: 'system', content: 'You are Kamzy, a friendly but smart person. Reply in Kamzy’s tone.' },
           { role: 'user', content: text }
         ]
-      });
+      })
 
-      const reply = response.choices[0].message.content;
-      await sock.sendMessage(msg.key.remoteJid, { text: reply });
-      console.log('🤖 Replied:', reply);
+      const aiReply = reply.choices[0].message.content
+      await sock.sendMessage(from, { text: aiReply })
+      console.log(`🤖 Replied: ${aiReply}`)
     } catch (err) {
-      console.error('❌ Error generating reply:', err);
+      console.error('Error generating AI reply:', err)
     }
-  });
+  })
+
+  sock.ev.on('creds.update', saveCreds)
 }
 
-connectBot();
+startBot()
